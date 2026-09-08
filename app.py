@@ -49,7 +49,7 @@ def load_data(file):
 
 if uploaded_file is None:
     st.info("Using the included sample dataset. Upload your own CSV from the sidebar to replace it.")
-    df = pd.read_csv("data/sales_data.csv")
+    df = pd.read_csv("sales_data.csv")
     df["Date"] = pd.to_datetime(df["Date"])
 else:
     try:
