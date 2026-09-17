@@ -4,54 +4,171 @@ from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 
-def forecast_arima(data, days=30):
-    model = ARIMA(data, order=(1, 1, 1))
-    model_fit = model.fit()
+def prepare_series(df, product):
+    """Prepare daily sales time series for a product."""
 
-    forecast = model_fit.forecast(steps=days)
+    data = df[df["Product"].astype(str) == str(product)].copy()
 
-    return forecast
+    data["Date"] = pd.to_datetime(data["Date"])
+    data["Sales"] = pd.to_numeric(data["Sales"], errors="coerce")
 
+    data = data.dropna(subset=["Date", "Sales"])
+    data = data.sort_values("Date")
 
-def forecast_sarima(data, days=30):
-    model = SARIMAX(
-        data,
-        order=(1, 1, 1),
-        seasonal_order=(1, 1, 1, 7)
+    # Combine duplicate dates
+    data = (
+        data.groupby("Date")["Sales"]
+        .sum()
+        .sort_index()
     )
 
-    model_fit = model.fit(disp=False)
+    # Fill missing dates
+    data = data.asfreq("D")
 
-    forecast = model_fit.forecast(steps=days)
+    # Fill missing sales values
+    data = data.interpolate()
+    data = data.bfill().ffill()
+
+    return data
+
+
+def arima_forecast(series, days):
+    """Generate ARIMA forecast."""
+
+    model = ARIMA(
+        series,
+        order=(1, 1, 1)
+    )
+
+    fitted_model = model.fit()
+
+    forecast = fitted_model.forecast(
+        steps=days
+    )
+
+    forecast = np.maximum(
+        forecast,
+        0
+    )
 
     return forecast
+
+
+def sarima_forecast(series, days):
+    """Generate SARIMA forecast with weekly seasonality."""
+
+    model = SARIMAX(
+        series,
+        order=(1, 1, 1),
+        seasonal_order=(1, 1, 1, 7),
+        enforce_stationarity=False,
+        enforce_invertibility=False
+    )
+
+    fitted_model = model.fit(
+        disp=False
+    )
+
+    forecast = fitted_model.forecast(
+        steps=days
+    )
+
+    forecast = np.maximum(
+        forecast,
+        0
+    )
+
+    return forecast
+
+
+def forecast_product(df, product, days=30):
+    """
+    Generate ARIMA and SARIMA forecasts
+    for one product.
+    """
+
+    series = prepare_series(
+        df,
+        product
+    )
+
+    if len(series) < 14:
+        raise ValueError(
+            f"{product} does not have enough "
+            "historical data. Please provide "
+            "at least 14 days of sales data."
+        )
+
+    arima_values = arima_forecast(
+        series,
+        days
+    )
+
+    sarima_values = sarima_forecast(
+        series,
+        days
+    )
+
+    last_date = series.index.max()
+
+    future_dates = pd.date_range(
+        start=last_date + pd.Timedelta(days=1),
+        periods=days,
+        freq="D"
+    )
+
+    result = pd.DataFrame({
+        "Date": future_dates,
+        "Product": product,
+        "ARIMA_Prediction": np.round(
+            arima_values,
+            2
+        ),
+        "SARIMA_Prediction": np.round(
+            sarima_values,
+            2
+        )
+    })
+
+    return result
 
 
 def forecast_all_products(df, days=30):
+    """
+    Generate ARIMA and SARIMA forecasts
+    for all products.
+    """
+
     results = []
 
-    products = df["Product"].unique()
+    products = df["Product"].dropna().unique()
 
     for product in products:
 
-        product_data = df[df["Product"] == product].copy()
+        try:
 
-        product_data["Date"] = pd.to_datetime(product_data["Date"])
+            result = forecast_product(
+                df,
+                product,
+                days
+            )
 
-        product_data = product_data.sort_values("Date")
+            results.append(result)
 
-        sales = product_data.set_index("Date")["Sales"]
+        except Exception as e:
 
-        # ARIMA
-        arima_forecast = forecast_arima(sales, days)
+            print(
+                f"Forecast failed for "
+                f"{product}: {e}"
+            )
 
-        # SARIMA
-        sarima_forecast = forecast_sarima(sales, days)
+    if not results:
+        raise ValueError(
+            "Unable to generate forecasts. "
+            "Check your dataset."
+        )
 
-        results.append({
-            "Product": product,
-            "ARIMA Forecast": round(arima_forecast.sum(), 2),
-            "SARIMA Forecast": round(sarima_forecast.sum(), 2)
-        })
-
-    return pd.DataFrame(results)
+    return pd.concat(
+        results,
+        ignore_index=True
+    )
